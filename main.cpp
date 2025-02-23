@@ -4,48 +4,58 @@
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <optional>
 
 const CLSID CLSID_DiaSource = __uuidof(DiaSource);
 
-static bool GetSymbolFromOffset(const wchar_t* pdbPath, DWORD64 offset, char* symbolName, size_t symbolSize)
-{
+struct SymbolInfo {
+    std::string symbolName;
+    std::string sourceFile;
+    DWORD lineNumber = 0;
+};
+
+std::optional<SymbolInfo> GetSymbolFromOffset(const wchar_t* pdbPath, DWORD64 offset) {
     CComPtr<IDiaDataSource> pSource;
 
     if (FAILED(pSource.CoCreateInstance(CLSID_DiaSource))) {
         std::cerr << "Failed to create DIA Data Source." << std::endl;
-        return false;
+        return std::nullopt;
     }
 
     if (FAILED(pSource->loadDataFromPdb(pdbPath))) {
         std::cerr << "Failed to load PDB file." << std::endl;
-        return false;
+        return std::nullopt;
     }
 
     CComPtr<IDiaSession> pSession;
     if (FAILED(pSource->openSession(&pSession))) {
         std::cerr << "Failed to open DIA Session." << std::endl;
-        return false;
+        return std::nullopt;
     }
 
     CComPtr<IDiaEnumSymbolsByAddr> pEnum;
     if (FAILED(pSession->getSymbolsByAddr(&pEnum))) {
         std::cerr << "Failed to get symbols by address." << std::endl;
-        return false;
+        return std::nullopt;
     }
 
     CComPtr<IDiaSymbol> pSymbol;
     if (FAILED(pEnum->symbolByRVA(offset, &pSymbol))) {
         std::cerr << "Failed to get symbol from address." << std::endl;
-        return false;
+        return std::nullopt;
     }
+
+    SymbolInfo symbolInfo;
 
     BSTR bstrName;
     if (FAILED(pSymbol->get_name(&bstrName))) {
         std::cerr << "Failed to get symbol name." << std::endl;
-        return false;
+        return std::nullopt;
     }
 
-    WideCharToMultiByte(CP_UTF8, 0, bstrName, -1, symbolName, symbolSize, NULL, NULL);
+    char symbolName[4096]{};
+    WideCharToMultiByte(CP_UTF8, 0, bstrName, -1, symbolName, MAX_PATH, NULL, NULL);
+    symbolInfo.symbolName = symbolName;
     SysFreeString(bstrName);
 
     // Get source file and line number
@@ -56,28 +66,26 @@ static bool GetSymbolFromOffset(const wchar_t* pdbPath, DWORD64 offset, char* sy
         if (SUCCEEDED(pLines->Next(1, &pLine, &celt)) && celt == 1) {
             DWORD line;
             if (SUCCEEDED(pLine->get_lineNumber(&line))) {
-                DWORD length = 0;
-                BSTR sourceFile;
-                if (SUCCEEDED(pLine->get_sourceFileId(&length))) {
-                    CComPtr<IDiaSourceFile> pSourceFile;
-                    if (SUCCEEDED(pSession->findFileById(length, &pSourceFile))) {
-                        if (SUCCEEDED(pSourceFile->get_fileName(&sourceFile))) {
-                            char sourceFileName[MAX_PATH];
-                            WideCharToMultiByte(CP_UTF8, 0, sourceFile, -1, sourceFileName, MAX_PATH, NULL, NULL);
-                            std::cout << "Source File: " << sourceFileName << ", Line: " << line << std::endl;
-                            SysFreeString(sourceFile);
-                        }
+                symbolInfo.lineNumber = line;
+
+                CComPtr<IDiaSourceFile> pSourceFile;
+                if (SUCCEEDED(pLine->get_sourceFile(&pSourceFile))) {
+                    BSTR sourceFile;
+                    if (SUCCEEDED(pSourceFile->get_fileName(&sourceFile))) {
+                        char sourceFileName[MAX_PATH]{};
+                        WideCharToMultiByte(CP_UTF8, 0, sourceFile, -1, sourceFileName, MAX_PATH, NULL, NULL);
+                        symbolInfo.sourceFile = sourceFileName;
+                        SysFreeString(sourceFile);
                     }
                 }
             }
         }
     }
 
-    return true;
+    return symbolInfo;
 }
 
-int wmain(int argc, wchar_t* argv[])
-{
+int wmain(int argc, wchar_t* argv[]) {
     if (argc < 3) {
         std::wcerr << L"Usage: " << argv[0] << L" <pdbPath> <offset>" << std::endl;
         return 1;
@@ -91,8 +99,7 @@ int wmain(int argc, wchar_t* argv[])
 
     const wchar_t* pdbPath = argv[1];
 
-    for (int i = 2; i < argc; ++i)
-    {
+    for (int i = 2; i < argc; ++i) {
         DWORD64 offset;
         std::wstringstream ss;
         ss << argv[i];
@@ -109,10 +116,16 @@ int wmain(int argc, wchar_t* argv[])
             return 1;
         }
 
-        char symbolName[4096];
+        auto symbolInfo = GetSymbolFromOffset(pdbPath, offset);
 
-        if (GetSymbolFromOffset(pdbPath, offset, symbolName, sizeof(symbolName))) {
-            std::cout << "Symbol: " << symbolName << std::endl;
+        if (symbolInfo) {
+            std::cout << "Symbol: " << symbolInfo->symbolName << std::endl;
+            if (!symbolInfo->sourceFile.empty()) {
+                std::cout << "Source File: " << symbolInfo->sourceFile << std::endl;
+            }
+            if (symbolInfo->lineNumber) {
+                std::cout << "Line: " << symbolInfo->lineNumber << std::endl;
+            }
         }
         else {
             std::cerr << "Failed to retrieve symbol." << std::endl;
