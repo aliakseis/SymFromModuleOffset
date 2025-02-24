@@ -1,10 +1,13 @@
 #include <windows.h>
 #include "dia2.h"
 #include <atlbase.h>
+#include <comutil.h>
 #include <iostream>
 #include <string>
 #include <sstream>
 #include <optional>
+
+#pragma comment(lib, "comsuppw.lib")
 
 const CLSID CLSID_DiaSource = __uuidof(DiaSource);
 
@@ -47,16 +50,13 @@ std::optional<SymbolInfo> GetSymbolFromOffset(const wchar_t* pdbPath, DWORD64 of
 
     SymbolInfo symbolInfo;
 
-    BSTR bstrName;
-    if (FAILED(pSymbol->get_name(&bstrName))) {
+    _bstr_t bstrName;
+    if (FAILED(pSymbol->get_name(bstrName.GetAddress()))) {
         std::cerr << "Failed to get symbol name." << std::endl;
         return std::nullopt;
     }
 
-    char symbolName[4096]{};
-    WideCharToMultiByte(CP_UTF8, 0, bstrName, -1, symbolName, MAX_PATH, NULL, NULL);
-    symbolInfo.symbolName = symbolName;
-    SysFreeString(bstrName);
+    symbolInfo.symbolName = static_cast<const char*>(bstrName);
 
     // Get source file and line number
     CComPtr<IDiaEnumLineNumbers> pLines;
@@ -70,12 +70,9 @@ std::optional<SymbolInfo> GetSymbolFromOffset(const wchar_t* pdbPath, DWORD64 of
 
                 CComPtr<IDiaSourceFile> pSourceFile;
                 if (SUCCEEDED(pLine->get_sourceFile(&pSourceFile))) {
-                    BSTR sourceFile;
-                    if (SUCCEEDED(pSourceFile->get_fileName(&sourceFile))) {
-                        char sourceFileName[MAX_PATH]{};
-                        WideCharToMultiByte(CP_UTF8, 0, sourceFile, -1, sourceFileName, MAX_PATH, NULL, NULL);
-                        symbolInfo.sourceFile = sourceFileName;
-                        SysFreeString(sourceFile);
+                    _bstr_t bstrSourceFile;
+                    if (SUCCEEDED(pSourceFile->get_fileName(bstrSourceFile.GetAddress()))) {
+                        symbolInfo.sourceFile = static_cast<const char*>(bstrSourceFile);
                     }
                 }
             }
@@ -123,7 +120,7 @@ int wmain(int argc, wchar_t* argv[]) {
             if (!symbolInfo->sourceFile.empty()) {
                 std::cout << "Source File: " << symbolInfo->sourceFile << std::endl;
             }
-            if (symbolInfo->lineNumber) {
+            if (symbolInfo->lineNumber != 0) {
                 std::cout << "Line: " << symbolInfo->lineNumber << std::endl;
             }
         }
